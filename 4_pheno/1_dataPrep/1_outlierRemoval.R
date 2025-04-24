@@ -64,7 +64,7 @@ coldata <- read.csv(coldataPath,
   mutate(phenotype = as.factor(phenotype))
 rownames(coldata) <- coldata$filename
 # Remove technical duplicates
-dupSamples <- c("3", "7", "4", "8")
+dupSamples <- c("8_D_batch2", "8_N_batch2", "16_D_batch2", "16_N_batch2")
 coldata <- coldata[!coldata$filename %in% dupSamples, ]
 
 # Count data =========
