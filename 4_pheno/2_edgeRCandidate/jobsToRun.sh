@@ -1,0 +1,11 @@
+sbatch GO0001780.sexPheno_FACTOR.sh
+sbatch GO0002283.sexPheno_FACTOR.sh
+sbatch GO0002446.sexPheno_FACTOR.sh
+sbatch GO0002544.sexPheno_FACTOR.sh
+sbatch GO0030223.sexPheno_FACTOR.sh
+sbatch GO0030593.sexPheno_FACTOR.sh
+sbatch GO0042119.sexPheno_FACTOR.sh
+sbatch GO0043312.sexPheno_FACTOR.sh
+sbatch GO0043313.sexPheno_FACTOR.sh
+sbatch GO0050729.sexPheno_FACTOR.sh
+sbatch GO0070942.sexPheno_FACTOR.sh

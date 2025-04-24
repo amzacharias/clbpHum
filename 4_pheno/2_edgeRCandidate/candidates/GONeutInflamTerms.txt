@@ -1,0 +1,11 @@
+GO:0002544	chronic inflammatory response
+GO:0050729	positive regulation of inflammatory response
+GO:0070942	neutrophil mediated cytotoxicity
+GO:0042119	neutrophil activation
+GO:0043312	neutrophil degranulation
+GO:0043313	regulation of neutrophil degranulation
+GO:0002283	neutrophil activation involved in immune response
+GO:0030223	neutrophil differentiation
+GO:0030593	neutrophil chemotaxis
+GO:0001780	neutrophil homeostasis
+GO:0002446	neutrophil mediated immunity

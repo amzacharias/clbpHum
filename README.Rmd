@@ -1,0 +1,271 @@
+---
+title: "Chronic Low Back Pain Workflow"
+author: "Amanda Zacharias"
+date: "`r Sys.Date()`"
+output:
+  md_document:
+    variant: markdown_github
+    toc: true
+    toc_depth: 3
+  html_document:
+    theme: readable
+    highlight: default
+    toc: true
+    toc_float: true
+    toc_depth: 3
+---
+
+```{r echo = FALSE}
+library(knitr) # 1.39
+```
+
+------------------------------------------------------------------------------------
+
+## Preface  
+For the manuscript, ["Circadian Rhythmicity and Neutrophil Activation as Biomarkers of Pain Intensity and Opioid Use"](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4908790) by Taccardi\*, Zacharias\*, and Gowdy\* _et al._
+
+------------------------------------------------------------------------------------
+
+## Setup
+**Important**:  
+
+- This project assumes you are using an hpc computing cluster with a SLURM scheduler.
+    - It is highly recommended that you use a cloud computing system. You may need to edit scripts to load dependencies in a matter compatible with your system. 
+- Ensure all scripts and data are stored in an R project folder.
+- Set the R current working directory to the project working directory. Most scripts assume that the project directory is the current working directory. 
+- <mark>Caution! Some scripts use absolute paths (especially bash scripts) </mark>
+    - Run the following commands in the terminal to replace the `absolutePath` spaceholder 
+    found in scripts with your absolute path to the project directory.
+    ```
+    find . -type f -name "*.sh" -exec sed -i'' -e 's#absolutePath#/my/custom/path#g' {} +
+    find . -type f -name "*.R" -exec sed -i'' -e 's#absolutePath#/my/custom/path#g' {} +
+    ```
+- Consider reading the `README.html` file which has a floating table of contents. 
+
+**Primary session info**: 
+
+- R version 3.6.0 (2019-04-26)
+- Platform: x86_64-redhat-linux-gnu (64-bit)
+- Running under: CentOS Linux 7 (Core)
+- Matrix products: default
+- BLAS/LAPACK: /usr/lib64/R/lib/libRblas.so  
+
+------------------------------------------------------------------------------------
+
+## Reads to Counts
+
+### <em>R</em> Packages 
+R version 3.6.0
+```{r echo = FALSE}
+depends_3.6.0 <- read.csv("dependInfo_3.6.0.csv", row.names = 1)
+kable(depends_3.6.0[, 1:2]) 
+```
+
+R version 4.2.1
+```{r echo = FALSE}
+depends_4.2.1 <- read.csv("dependInfo_4.2.1.csv", row.names = 1)
+kable(depends_4.2.1[, c(1,3)])
+```
+
+### Download reference genome
+
+1. Navigate to the `0_resources` folder
+    - R current working directory remains the project working directory
+    - Terminal working directory becomes `./0_resources` by running `cd ./0_resources` in the command line
+2. Run `1_download.sh` to download the human reference genome from GENCODE.
+3. Run `2_indexHisat.sh` to index the reference genome for later read alignment with Hisat2.
+
+    ```
+    # Load HISAT2 and dependencies
+    module load StdEnv/2020
+    module load hisat2/2.2.1
+    
+    # Make folder for index files
+    mkdir ${BASEPATH}/index
+    
+    # Extract splice sites and exons
+    echo "Started extracting splice sites"
+    hisat2_extract_splice_sites.py -v $GTF_HUMAN_REF > $SPLICESITE_PATH
+    echo "Started extracting exons"
+    hisat2_extract_exons.py -v $GTF_HUMAN_REF > $EXON_PATH
+    
+    # Build index
+    echo "Started building the index"
+    hisat2-build -p 20 -f $FNA_HUMAN_REF --ss $SPLICESITE_PATH --exon $EXON_PATH $INDEX_NAME
+    ```
+
+
+### QC of sequencing reads
+
+1. Navigate to the `1_qcSeqReads` folder
+    - R current working directory remains the project working directory
+    - Terminal working directory becomes `./1_qcSeqReads` by running `cd ./1_qcSeqReads` in the command line
+2. Run `1_writeFastqcScripts.R` to generate individual scripts
+3. Execute fastqc scripts. **Do not execute all scripts at once!** I recommend running 10 at a time. <mark>Use `2_checkSucccess.R` and `jobsToRun.sh` to ensure all jobs have been run! </mark>
+
+    ```
+    # 1 cpu, max 10 gigabytes of memory
+    module load StdEnv/2020 nixpkgs/16.09 fastqc/0.11.9
+    fastqc -f fastq -o $OUTDIR $INDATAPATH
+    ```
+    
+4. Execute multiqc script. 
+
+    ```
+    # 1 cpu, max 500 MB of memory
+    module load StdEnv/2020 python/3.9.6
+    pip install --user multiqc # only need to install once
+    echo "Making txt file with paths to each fastqc report"
+    find ${FQ_DIR}/*.zip > $FQ_PATHS_TXT
+    echo "Starting multiqc"
+    multiqc --file-list $FQ_PATHS_TXT -o $OUTPATH -n $OUTFILENAME --interactive \
+      --cl_config "fastqc_config: { fastqc_theoretical_gc: hg38_txome }"
+    ```
+    
+### Align and quantify reads
+
+**Alignment**
+
+1. Navigate to `./2_align`
+2. Generate an alignment script for each sample with `1_writeIndivScripts.R`. The base script from which these scripts are written is `1_baseScript.sh`. 
+3. Run scripts. Use `2_checkSuccess.R` and `jobsToRun.sh` to ensure all jobs have been run.
+
+    ```
+    # 10 cpu, 45 GB max memory
+    module load StdEnv/2020 samtools/1.10 hisat2/2.2.1 
+    # Alignment
+    hisat2 -p 10 -x $INDEX -1 $PAIRED_END_1 -2 $PAIRED_END_2 \
+    --dta --sensitive --no-discordant --no-mixed \
+    --summary-file $SUMMARY_PATH \
+    --time --verbose \
+    --rg-id=${BATCH}.${LANE} \
+    --rg PU:${BATCH}.${LANE} \
+    --rg SM:${SAMPLEID} \
+    --rg LB:LIB_${SAMPLEID} \
+    --rg PL:DNBSEQ \
+    -S ${OUT_PATH}.sam
+    # Samtools processing
+    samtools view -b -@ 10 ${OUT_PATH}.sam > ${OUT_PATH}.bam
+    rm ${OUT_PATH}.sam
+    echo collate started at $(date +'%T')
+    samtools collate -@ 10 -o ${OUT_PATH}.col.bam  ${OUT_PATH}.bam 
+    rm ${OUT_PATH}.bam
+    echo fixmate started at $(date +'%T')
+    samtools fixmate -m -@ 10 ${OUT_PATH}.col.bam  ${OUT_PATH}.fix.bam 
+    rm ${OUT_PATH}.col.bam
+    echo sort started at $(date +'%T')
+    samtools sort -m 2G -@ 10 -o ${OUT_PATH}.sort.bam ${OUT_PATH}.fix.bam 
+    rm ${OUT_PATH}.fix.bam
+    echo markdup started at $(date +'%T')
+    samtools markdup -@ 10 -s ${OUT_PATH}.sort.bam ${OUT_PATH}.sort.mrkdup.bam 
+    rm ${OUT_PATH}.sort.bam
+    echo index started at $(date +'%T')
+    samtools index -b -@ 10 ${OUT_PATH}.sort.mrkdup.bam  ${OUT_PATH}.sort.mrkdup.bam.bai
+    ```
+    
+    - Hisat2 parameters adapted from the Beijing Genomic's Institute's Dr. Tom platform [example dataset 1 ](https://0-www-ncbi-nlm-nih-gov.brum.beds.ac.uk/geo/query/acc.cgi?acc=GSM4953907), [example dataset 2](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE186576)
+        - --dta = reported alignments tailored for tools like StringTie. Require longer anchor lengths for novel splice sites
+        - --sensitive = same as `--bowtie2-dp 1 -k 30 --score-min L,0,-0.5`
+            - --bowtie2-dp 1 = use Bowtie2's conditional dynamic programming. 
+            - -k 30 = search for at most 30 distinct primary alignments for each read. Default = 5 (linear index) or 10 (graph index). 
+            - --score-min = minimum score function for an alignment to be valid `f(x) = 0 + -0.5 * x` where x = read length. Default = L,0,-0.2. 
+        - --no-discordant = don't allow unique alignment of mates
+        - --no-mixed = don't try to find alignments for individual mates after hisat fails to identify concordant/discordant alignments
+    - Hisat2 parameters to provide extra metadata
+        - --rg-id=${BATCH}.${LANE} = The read group id
+        - --rg PU:${BATCH}.${LANE} = Platform unit (unique identifier)
+        - --rg SM:${SAMPLEID} = Sample name
+        - --rg LB:LIB_${SAMPLEID} = Library
+        - --rg PL:DNBSEQ = Sequencing platform
+    - Using samtools to 1) convert SAM to BAM, 2) mark duplicates and sort the BAM file, & 3) index the bam file. For marking duplicates and sorting by coordinates, use the example workflow from the [samtools-markdup manual; author = Andrew Whitwham from the Sanger Institute](http://www.htslib.org/doc/samtools-markdup.html)
+    
+5. Run the `getRates.R` script to get an overview of Hisat2's alignment rates. 
+
+**Quantification**
+
+1. Navigate to `./3_stringtie`
+2. Run R scripts that begin with "write". The base script from which the StringTie scripts are written are `1_baseStringtie.sh` and `6_baseStringtie2.sh`. 
+4. Run the pass 1 individual scripts. Use `2_checkSuccess.R` and `jobsToRun.sh` to ensure all scripts are executed. 
+
+    ```
+    # 1 cpu, 3 GB memory # Adjust memory if needed
+    # REF_GTF is the comprehensive gene annotation from Gencode
+    module load StdEnv/2020 stringtie/2.1.5
+    stringtie $INPUT -p 1 -G $REF_GTF -o $OUT_GTF
+    ```
+    
+5. Run `4_writeMergeScripts.R` script and associated bash scripts to merge gtfs from pass 1. 
+
+    ```
+    # 1 cpu, 3 GB memory memory
+    module load StdEnv/2020 stringtie/2.1.5
+    stringtie --merge -p 1 -o $OUTPUT -G $REF_GTF $GTFS_LIST
+    ```
+    
+6. Run the pass 2 individual scripts. Use `2_checkSuccess.R` and `jobsToRun.sh` to ensure all scripts are executed. 
+
+    ```
+    # 1 cpu, 1 GB memory
+    # REF_GTF is the merged gtf that corresponds to this sample's tissue
+    module load StdEnv/2020 stringtie/2.1.5
+    stringtie $INPUT -b $BALL -e -p 5 -G $REF_GTF -o $OUT_GTF
+    ```
+    
+7. To get transcript counts run `7_runPrepDE.sh`.
+
+    ```
+    # 1 cpu, 5 GB memory
+    module load StdEnv/2020 python/3.9.6
+    
+    python $PREPDE_PATH -v \
+      -i ${STRING_PATH}/gtfLists/pass2List.txt \
+      -g ${STRING_PATH}/prepDEcounts/genes.csv \
+      -t ${STRING_PATH}/prepDEcounts/transcripts.csv \
+      -l 150
+    ```
+
+7. To get improved gene names corresponding to transcript IDs, switch your R version to 4.2.1 and run `7_isoformAnalyzeR.R`. 
+  - This script uses an absolute path! Edit the script to use your project directory.
+
+### Data preparation
+
+1. Navigate to `4_pheno`. All downstream scripts will be located within this directory.
+2. Navigate to `1_dataPrep`.
+3. Clean the count matrix
+    i. Run `0_id2name.R` to get a dataframe with ensembl ID to gene name/symbol conversion information.
+    ii. Run `1_outlierRemoval.R` to ... 
+        a. Perform outlier detection with *arrayQualityMetrics*. A sample is considered an outlier if 
+            - it is marked as an outlier before and after normalization by the same outlier detection metrics, and/or, 
+            - it is marked as an outlier by multiple outlier detection metrics after normalization
+            - Note: No samples were considered outliers and removed.
+        b. Normalize counts with the [trimmed mean of M values method](https://doi.org/10.1093/bioinformatics/btp616) 
+        c. Perform non-specific filering to remove lowly expressed/variable features.
+4. Adjust counts for covariates by running `2_combatSeq.R`
+
+
+### Global differential expression analysis
+
+1. Navigate to `2_edgeR`.
+2. Use the bash script `1_bash/formula/sexPheno_FACTOR.sh` to run the R script `0_sexPheno_FACTOR.R`, which is used to identify transcripts differentially expressed across phenotypes (Figure 3).
+3. Use the bash script `1_bash/formula/sexArythOpioid_FACTOR.sh` to run the R script `0_sexArythOpioid_FACTOR.R`, which is used to identify transcripts differentially expressed between non-rhythmic opioid users and non-users (Supplemental Figure 11).
+4. Run `2_gprofiler.R` to perform pathway enrichment analysis on differentially expressed transcripts (Figure 3, Supplemental Figure 11).
+5. Run `3_fcFilter.R` to determine the number of transcripts with positive and negative fold changes corresponding to `sexPheno_FACTOR`.
+
+### Candidate differential expression analysis
+
+1. Navigate to `2_edgeRCandidate`.
+2. Run `1.1_prepareCandidates.R` to prepare candidate genes for analysis.
+3. Run `2_writeScripts.R` which uses `2_baseScript.sh` to write a bash script for each analysis.
+    - Candidate genes/transcripts are removed after lowly expressed transcripts are removed.
+4. Run *.sh scripts in the bash folder to execute analyses. Use the `jobsToRun.sh` script to see what jobs need to be run.
+5. Run `3_compareAcrossTerms.R` to summarize the DETs across candidate gene lists.
+
+### Perform network analysis
+
+1. Navigate to `3_wgcna/transcriptSexDayNight`.
+2. Use `1_runWGCNA.sh` to execute the script `1_makeNetworkStepwise.R`, which constructs a signed network for the day samples, and a network for the night samples.
+3. Run `2_modTraitRelationGLM.R` and `2_modTraitRelationMLR.R` to determine the correlation between modules and pain phenotype.
+4. Run `3_gprofilerWGCNA.R` to perform pathway enrichment analysis on transcript modules.
+
+## Done!
+
